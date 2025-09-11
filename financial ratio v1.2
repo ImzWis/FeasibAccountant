@@ -1,0 +1,408 @@
+import React, { useMemo, useState } from "react";
+import { LineChart, Line, XAxis, YAxis, Tooltip, Legend, CartesianGrid, ResponsiveContainer } from "recharts";
+import { motion } from "framer-motion";
+import { getAuth, signInAnonymously, onAuthStateChanged } from "firebase/auth";
+import { initializeApp } from "firebase/app";
+import { getFirestore, collection, onSnapshot, doc, setDoc } from "firebase/firestore";
+
+const firebaseConfig = JSON.parse(typeof __firebase_config !== "undefined" ? __firebase_config : "{}");
+const appId = typeof __app_id !== "undefined" ? __app_id : "default-app-id";
+const __initial_auth_token = typeof __initial_auth_token !== "undefined" ? __initial_auth_token : "";
+
+// NOTE: This is a placeholder for `shadcn/ui` components which are not available.
+// In a real project, you would import these from the library.
+const Card = ({ children, className }) => <div className={`bg-white rounded-xl shadow-lg ${className}`}>{children}</div>;
+const CardHeader = ({ children, className }) => <div className={`p-4 rounded-t-xl ${className}`}>{children}</div>;
+const CardTitle = ({ children, className }) => <h3 className={`text-xl font-semibold ${className}`}>{children}</h3>;
+const CardContent = ({ children, className }) => <div className={`p-6 ${className}`}>{children}</div>;
+const Button = ({ children, className, onClick, ...props }) => <button onClick={onClick} className={`px-4 py-2 rounded-lg font-medium text-white shadow-sm transition-colors ${className}`} {...props}>{children}</button>;
+const Input = ({ className, onChange, ...props }) => <input onChange={onChange} className={`w-full px-3 py-2 border rounded-md focus:outline-none focus:ring-green-500 transition-colors ${className}`} {...props} />;
+const Label = ({ children, ...props }) => <label className="text-gray-700" {...props}>{children}</label>;
+const Tabs = ({ children, defaultValue, ...props }) => { const [activeTab, setActiveTab] = useState(defaultValue); return (<div {...props}> {React.Children.map(children, (child) => child.type === TabsList ? React.cloneElement(child, { activeTab, setActiveTab }) : child.type === TabsContent ? React.cloneElement(child, { activeTab }) : child)}</div>); };
+const TabsList = ({ children, activeTab, setActiveTab, className }) => <div className={`flex flex-wrap gap-2 ${className}`}>{React.Children.map(children, (child) => React.cloneElement(child, { activeTab, setActiveTab }))}</div>;
+const TabsTrigger = ({ children, value, activeTab, setActiveTab, className }) => <button onClick={() => setActiveTab(value)} className={`px-4 py-2 text-sm rounded-full transition-colors ${activeTab === value ? 'bg-green-700 text-white' : 'bg-gray-200 text-gray-800'} ${className}`} >{children}</button>;
+const TabsContent = ({ children, value, activeTab, className }) => <div className={activeTab === value ? `${className}` : 'hidden'}>{children}</div>;
+
+// End of placeholder components
+
+const COLORS = { primaryDark: "#1c3d29", primary: "#2a6142", accent: "#5c955e", surface: "#d3ddd3", ink: "#08110b", danger: "#d64545" };
+
+const n = (v) => (isFinite(Number(v)) ? Number(v) : 0);
+const toPct = (v) => (isFinite(v) ? (v * 100).toFixed(2) + "%" : "-");
+const fmtNum = (v) => (v === null || v === undefined || v === "" ? "" : isFinite(Number(v)) ? Number(v).toLocaleString(undefined, { maximumFractionDigits: 6 }) : "");
+const parseNum = (s) => { const cleaned = String(s ?? "").replace(/,/g, ""); if (cleaned.trim() === "") return 0; const x = Number(cleaned); return isFinite(x) ? x : 0; };
+
+const defaultYears = ["Year 1", "Year 2", "Year 3"];
+
+const KEYS = {
+  cash: "Cash",
+  receivables: "Accounts Receivable",
+  inventory: "Inventory",
+  currentAssets: "Current Assets",
+  totalAssets: "Total Assets",
+  payables: "Accounts Payable",
+  currentLiabilities: "Current Liabilities",
+  totalLiabilities: "Total Liabilities",
+  equity: "Equity",
+  avgReceivables: "Average Receivables",
+  avgInventory: "Average Inventory",
+  avgTotalAssets: "Average Total Assets",
+  avgEquity: "Average Equity",
+  avgPayables: "Average Payables",
+  netSales: "Net Sales",
+  netCreditPurchases: "Net Credit Purchases",
+  cogs: "COGS",
+  operatingIncome: "Operating Income (EBIT)",
+  interestExpense: "Interest Expense",
+  netIncome: "Net Income",
+};
+
+const PRETTY = {
+  cash: "Cash",
+  receivables: "Accounts Receivable",
+  inventory: "Inventory",
+  currentAssets: "Current Assets",
+  totalAssets: "Total Assets",
+  payables: "Accounts Payable",
+  currentLiabilities: "Current Liabilities",
+  totalLiabilities: "Total Liabilities",
+  equity: "Equity",
+  avgReceivables: (
+    <>
+      <div>Average Receivables</div>
+      <div className="text-xs text-gray-400">(=(Beg AR + End AR)/2)</div>
+    </>
+  ),
+  avgInventory: (
+    <>
+      <div>Average Inventory</div>
+      <div className="text-xs text-gray-400">(=(Beg Inv + End Inv)/2)</div>
+    </>
+  ),
+  avgTotalAssets: (
+    <>
+      <div>Average Total Assets</div>
+      <div className="text-xs text-gray-400">(=(Beg Assets + End Assets)/2)</div>
+    </>
+  ),
+  avgEquity: (
+    <>
+      <div>Average Equity</div>
+      <div className="text-xs text-gray-400">(=(Beg Equity + End Equity)/2)</div>
+    </>
+  ),
+  avgPayables: (
+    <>
+      <div>Average Payables</div>
+      <div className="text-xs text-gray-400">(=(Beg AP + End AP)/2)</div>
+    </>
+  ),
+  netSales: "Net Sales (Revenue)",
+  netCreditPurchases: "Net Credit Purchases",
+  cogs: "Cost of Goods Sold (COGS)",
+  operatingIncome: "Operating Income (EBIT)",
+  interestExpense: "Interest Expense",
+  netIncome: "Net Income",
+};
+
+const RATIO_DEFS = [
+  { id: "currentRatio", category: "Liquidity", name: "Current Ratio", formula: "Current Assets / Current Liabilities", desc: "Liquidity capacity to meet short‑term obligations.", threshold: "> 1.0x", fmt: (v) => (isFinite(v) && !isNaN(v) ? v.toFixed(2) + "x" : "-"), compute: (y) => n(y.currentAssets) / n(y.currentLiabilities) },
+  { id: "quickRatio", category: "Liquidity", name: "Quick Ratio", formula: "(Current Assets − Inventory) / Current Liabilities", desc: "Liquidity excluding inventory.", threshold: "> 1.0x", fmt: (v) => (isFinite(v) && !isNaN(v) ? v.toFixed(2) + "x" : "-"), compute: (y) => (n(y.currentAssets) - n(y.inventory)) / n(y.currentLiabilities) },
+  { id: "cashRatio", category: "Liquidity", name: "Cash Ratio", formula: "Cash / Current Liabilities", desc: "Most conservative liquidity test.", threshold: "> 0.2x", fmt: (v) => (isFinite(v) && !isNaN(v) ? v.toFixed(2) + "x" : "-"), compute: (y) => n(y.cash) / n(y.currentLiabilities) },
+  { id: "workingCapital", category: "Liquidity", name: "Working Capital", formula: "Current Assets − Current Liabilities", desc: "Short‑term financial buffer.", threshold: "> $0", fmt: (v) => (isFinite(v) && !isNaN(v) ? v.toLocaleString() : "-"), compute: (y) => n(y.currentAssets) - n(y.currentLiabilities) },
+  { id: "dso", category: "Efficiency", name: "Days Sales Outstanding (DSO)", formula: "365 / (Net Sales / Average Receivables)", desc: "Average days to collect receivables.", threshold: "< 45 days", fmt: (v) => (isFinite(v) && !isNaN(v) ? v.toFixed(0) + " days" : "-"), compute: (y) => { const t = n(y.netSales) && (n(y.avgReceivables) || n(y.receivables)) ? n(y.netSales) / (n(y.avgReceivables) || n(y.receivables)) : NaN; return t ? 365 / t : NaN; } },
+  { id: "diy", category: "Efficiency", name: "Days Inventory (DIO)", formula: "365 / (COGS / Average Inventory)", desc: "Average days inventory is held.", threshold: "< 90 days", fmt: (v) => (isFinite(v) && !isNaN(v) ? v.toFixed(0) + " days" : "-"), compute: (y) => { const t = n(y.cogs) && (n(y.avgInventory) || n(y.inventory)) ? n(y.cogs) / (n(y.avgInventory) || n(y.inventory)) : NaN; return t ? 365 / t : NaN; } },
+  { id: "receivableTurnover", category: "Efficiency", name: "Receivables Turnover", formula: "Net Sales / Average Receivables", desc: "How many times receivables are collected in a year.", threshold: "> 4x", fmt: (v) => (isFinite(v) && !isNaN(v) ? v.toFixed(2) + "x" : "-"), compute: (y) => { const d = n(y.avgReceivables) || n(y.receivables); return d ? n(y.netSales) / d : NaN; } },
+  { id: "inventoryTurnover", category: "Efficiency", name: "Inventory Turnover", formula: "COGS / Average Inventory", desc: "How quickly inventory is sold and replaced.", threshold: "> 4x", fmt: (v) => (isFinite(v) && !isNaN(v) ? v.toFixed(2) + "x" : "-"), compute: (y) => { const d = n(y.avgInventory) || n(y.inventory); return d ? n(y.cogs) / d : NaN; } },
+  { id: "payableTurnover", category: "Efficiency", name: "Payables Turnover", formula: "Net credit purchases / Average Payables", desc: "How often payables are paid in a year.", threshold: "> 4x", fmt: (v) => (isFinite(v) && !isNaN(v) ? v.toFixed(2) + "x" : "-"), compute: (y) => { const d = n(y.avgPayables) || n(y.payables); return d ? n(y.netCreditPurchases) / d : NaN; } },
+  { id: "assetTurnover", category: "Efficiency", name: "Asset Turnover", formula: "Net Sales / Average Total Assets", desc: "Sales generated per unit of assets.", threshold: "> 1x", fmt: (v) => (isFinite(v) && !isNaN(v) ? v.toFixed(2) + "x" : "-"), compute: (y) => { const d = n(y.avgTotalAssets) || n(y.totalAssets); return d ? n(y.netSales) / d : NaN; } },
+  { id: "debtToEquity", category: "Leverage", name: "Debt-to-Equity", formula: "Total Liabilities / Equity", desc: "Leverage balance between debt and equity financing.", threshold: "< 1.5x", fmt: (v) => (isFinite(v) && !isNaN(v) ? v.toFixed(2) + "x" : "-"), compute: (y) => n(y.totalLiabilities) / n(y.equity) },
+  { id: "debtRatio", category: "Leverage", name: "Debt Ratio", formula: "Total Liabilities / Total Assets", desc: "Proportion of assets financed by debt.", threshold: "< 50%", fmt: (v) => (isFinite(v) && !isNaN(v) ? toPct(v) : "-"), compute: (y) => n(y.totalLiabilities) / n(y.totalAssets) },
+  { id: "interestCoverage", category: "Coverage", name: "Interest Coverage", formula: "Operating Income / Interest Expense", desc: "Ability to cover interest costs.", threshold: "> 3x", fmt: (v) => (isFinite(v) && !isNaN(v) ? v.toFixed(2) + "x" : "-"), compute: (y) => n(y.operatingIncome) / n(y.interestExpense) },
+  { id: "grossMargin", category: "Profitability", name: "Gross Margin", formula: "(Net Sales − COGS) / Net Sales", desc: "Profit after direct production costs.", threshold: "> 20%", fmt: (v) => (isFinite(v) && !isNaN(v) ? toPct(v) : "-"), compute: (y) => (n(y.netSales) - n(y.cogs)) / n(y.netSales) },
+  { id: "operatingMargin", category: "Profitability", name: "Operating Margin", formula: "Operating Income / Net Sales", desc: "Profit from core operations before interest and tax.", threshold: "> 10%", fmt: (v) => (isFinite(v) && !isNaN(v) ? toPct(v) : "-"), compute: (y) => n(y.operatingIncome) / n(y.netSales) },
+  { id: "netMargin", category: "Profitability", name: "Net Profit Margin", formula: "Net Income / Net Sales", desc: "Bottom‑line profitability after all expenses.", threshold: "> 5%", fmt: (v) => (isFinite(v) && !isNaN(v) ? toPct(v) : "-"), compute: (y) => n(y.netIncome) / n(y.netSales) },
+  { id: "roa", category: "Profitability", name: "Return on Assets (ROA)", formula: "Net Income / Average Total Assets", desc: "Efficiency in generating profit from assets.", threshold: "> 5%", fmt: (v) => (isFinite(v) && !isNaN(v) ? toPct(v) : "-"), compute: (y) => { const d = n(y.avgTotalAssets) || n(y.totalAssets); return d ? n(y.netIncome) / d : NaN; } },
+  { id: "roe", category: "Profitability", name: "Return on Equity (ROE)", formula: "Net Income / Average Equity", desc: "Return delivered to equity holders.", threshold: "> 15%", fmt: (v) => (isFinite(v) && !isNaN(v) ? toPct(v) : "-"), compute: (y) => { const d = n(y.avgEquity) || n(y.equity); return d ? n(y.netIncome) / d : NaN; } },
+];
+
+const CATEGORY_ORDER = ["Liquidity", "Efficiency", "Leverage", "Coverage", "Profitability"];
+
+function useComputed(model, years) { return useMemo(() => years.map((yl) => { const y = model[yl] || {}; const computed = {}; for (const r of RATIO_DEFS) { try { computed[r.id] = r.compute(y); } catch { computed[r.id] = NaN; } } return { year: yl, ...computed }; }), [model, years]); }
+
+function downloadCSV(rows, filename = "financial-ratios.csv") { if (!rows?.length) return; const headers = Object.keys(rows[0]); const csv = [headers.join(",")].concat(rows.map((r) => headers.map((h) => r[h]).join(","))).join("\r\n"); const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" }); const url = URL.createObjectURL(blob); const a = document.createElement("a"); a.href = url; a.download = filename; document.body.appendChild(a); a.click(); document.body.removeChild(a); URL.revokeObjectURL(url); }
+
+function downloadExcel({ years, model, ratiosPerYear, filename = "financial-ratios.xlsx" }) { if (typeof XLSX === 'undefined') { console.error("XLSX library not loaded. Cannot download Excel file."); return; } const wb = XLSX.utils.book_new(); const inputHeader = ["Line Item", ...years]; const orderedKeys = Object.keys(KEYS); const inputRows = orderedKeys.map((k) => [PRETTY[k], ...years.map((y) => model[y]?.[k] ?? 0)]); const wsInputs = XLSX.utils.aoa_to_sheet([inputHeader, ...inputRows]); XLSX.utils.book_append_sheet(wb, wsInputs, "Inputs"); const ratioHeader = ["Ratio", ...years]; const ratioRows = RATIO_DEFS.map((r) => [r.name, ...ratiosPerYear.map((row) => row?.[r.id])]); const wsRatios = XLSX.utils.aoa_to_sheet([ratioHeader, ...ratioRows]); XLSX.utils.book_append_sheet(wb, wsRatios, "Ratios"); XLSX.writeFile(wb, filename); }
+
+export default function App() {
+  const [db, setDb] = useState(null);
+  const [auth, setAuth] = useState(null);
+  const [userId, setUserId] = useState(null);
+  const [years, setYears] = useState(defaultYears);
+  const [model, setModel] = useState({});
+  const [loading, setLoading] = useState(true);
+  const [selectedRatio, setSelectedRatio] = useState("currentRatio");
+  const logoUrl = "https://storage.googleapis.com/gweb-unibuild-assets/im_assets/images/SUB%20LOGO%20-%20BLACK%20&%20GREEN.png";
+  
+  React.useEffect(() => {
+    const script = document.createElement("script");
+    script.src = "https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js";
+    script.async = true;
+    document.body.appendChild(script);
+
+    return () => {
+      document.body.removeChild(script);
+    };
+  }, []);
+
+  // Initialize Firebase and set up auth state listener
+  React.useEffect(() => {
+    try {
+      const app = initializeApp(firebaseConfig);
+      const firestore = getFirestore(app);
+      const firebaseAuth = getAuth(app);
+      setDb(firestore);
+      setAuth(firebaseAuth);
+
+      const unsubscribe = onAuthStateChanged(firebaseAuth, async (user) => {
+        if (user) {
+          setUserId(user.uid);
+          // Set up real-time listener for user's data
+          const userDocRef = doc(firestore, "artifacts", appId, "users", user.uid, "financial_data", "main");
+          onSnapshot(userDocRef, (docSnap) => {
+            if (docSnap.exists()) {
+              const data = docSnap.data();
+              if (data.years && data.model) {
+                setYears(data.years);
+                setModel(data.model);
+              } else {
+                // Initialize default state if data is empty
+                const defaultModel = {};
+                Object.keys(KEYS).forEach((k) => defaultYears.forEach((y) => (defaultModel[y] = { ...defaultModel[y], [k]: 0 })));
+                setModel(defaultModel);
+              }
+            } else {
+              // Initialize default state if doc doesn't exist
+              const defaultModel = {};
+              Object.keys(KEYS).forEach((k) => defaultYears.forEach((y) => (defaultModel[y] = { ...defaultModel[y], [k]: 0 })));
+              setModel(defaultModel);
+            }
+            setLoading(false);
+          });
+        } else {
+          await signInAnonymously(firebaseAuth);
+        }
+      });
+      return () => unsubscribe();
+    } catch (e) {
+      console.error("Firebase initialization failed:", e);
+      // Fallback to initial state if Firebase fails
+      const defaultModel = {};
+      Object.keys(KEYS).forEach((k) => defaultYears.forEach((y) => (defaultModel[y] = { ...defaultModel[y], [k]: 0 })));
+      setModel(defaultModel);
+      setLoading(false);
+    }
+  }, []);
+
+  const saveToFirestore = async (newYears, newModel) => {
+    if (db && userId) {
+      const userDocRef = doc(db, "artifacts", appId, "users", userId, "financial_data", "main");
+      try {
+        await setDoc(userDocRef, { years: newYears, model: newModel }, { merge: true });
+      } catch (e) {
+        console.error("Error saving data to Firestore: ", e);
+      }
+    }
+  };
+
+  const addYear = () => {
+    const nextN = years.length + 1;
+    const name = `Year ${nextN}`;
+    const newYears = [...years, name];
+    const newModel = { ...model, [name]: { ...model[years[0]] } };
+    Object.keys(newModel[name]).forEach((k) => (newModel[name][k] = 0));
+    setYears(newYears);
+    setModel(newModel);
+    saveToFirestore(newYears, newModel);
+  };
+
+  const updateValue = (year, key, value) => {
+    const parsed = parseNum(value);
+    const newModel = { ...model, [year]: { ...model[year], [key]: parsed } };
+    setModel(newModel);
+    saveToFirestore(years, newModel);
+  };
+
+  const ratiosPerYear = useComputed(model, years);
+  const selectedDef = RATIO_DEFS.find((r) => r.id === selectedRatio);
+
+  const feasibilityFlags = useMemo(() => years.map((yl) => { const y = model[yl] || {}; const cr = n(y.currentAssets) / n(y.currentLiabilities); const qr = (n(y.currentAssets) - n(y.inventory)) / n(y.currentLiabilities); const de = n(y.totalLiabilities) / n(y.equity); const ic = n(y.operatingIncome) / n(y.interestExpense || 1); const nm = n(y.netIncome) / n(y.netSales || 1); const at = (() => { const d = n(y.avgTotalAssets) || n(y.totalAssets); return d ? n(y.netSales) / d : NaN; })(); const it = (() => { const d = n(y.avgInventory) || n(y.inventory); return d ? n(y.cogs) / d : NaN; })(); const rt = (() => { const d = n(y.avgReceivables) || n(y.receivables); return d ? n(y.netSales) / d : NaN; })(); const pt = (() => { const d = n(y.avgPayables) || n(y.payables); return d ? n(y.netCreditPurchases) / d : NaN; })(); return { year: yl, liquidity_ok: cr >= 1.2 && qr >= 1.0, efficiency_ok: (isFinite(at) && at >= 1) || (isFinite(it) && it >= 3) || (isFinite(rt) && rt >= 6) || (isFinite(pt) && pt >= 6), leverage_ok: de <= 1.5 || !isFinite(de), coverage_ok: ic >= 3 || !isFinite(ic), margin_ok: nm >= 0.05 || !isFinite(nm) }; }), [model, years]);
+
+  const ratioChartData = useMemo(() => ratiosPerYear.map((r) => ({ year: r.year, value: r[selectedRatio] })), [ratiosPerYear, selectedRatio]);
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center min-h-screen text-gray-600">
+        <p>Loading financial data...</p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="min-h-screen p-6 font-sans antialiased" style={{ backgroundColor: COLORS.surface }}>
+      <div className="mx-auto max-w-7xl space-y-6">
+        <div className="flex justify-center items-center mb-6">
+          <img src={logoUrl} alt="Feasib Accountant Logo" className="w-52 h-auto" />
+        </div>
+        <motion.h1 className="text-3xl md:text-4xl font-bold mb-2 text-center" initial={{ opacity: 0, y: -6 }} animate={{ opacity: 1, y: 0 }}>
+          Financial Ratio Calculator
+        </motion.h1>
+        <p className="text-gray-700 mb-6 text-center">Enter figures, review results, and export CSV or Excel.</p>
+        <Tabs defaultValue="inputs" className="w-full">
+          <TabsList className="flex w-full gap-2 rounded-full p-1 shadow-sm" style={{ backgroundColor: COLORS.surface }}>
+            <TabsTrigger value="inputs" className="rounded-full px-4 py-2 text-sm data-[state=active]:text-white" style={{ backgroundColor: COLORS.primary }}>Inputs</TabsTrigger>
+            <TabsTrigger value="results" className="rounded-full px-4 py-2 text-sm data-[state=active]:text-white" style={{ backgroundColor: COLORS.primary }}>Results</TabsTrigger>
+            <TabsTrigger value="charts" className="rounded-full px-4 py-2 text-sm data-[state=active]:text-white" style={{ backgroundColor: COLORS.primary }}>Charts</TabsTrigger>
+          </TabsList>
+
+          <TabsContent value="inputs" className="mt-4">
+            <div className="grid grid-cols-1 gap-6">
+              <Card className="rounded-xl shadow-md">
+                <CardHeader className="rounded-t-xl" style={{ backgroundColor: COLORS.primaryDark }}>
+                  <CardTitle className="text-[#2a6142]">Overview</CardTitle>
+                </CardHeader>
+                <CardContent>
+                  <div className="flex flex-wrap items-center gap-3 mt-2 mb-5">
+                    {years.map((y) => (<span key={y} className="px-3 py-1 rounded-full text-sm" style={{ backgroundColor: "#fff", color: COLORS.ink, border: "1px solid rgba(0,0,0,0.08)", borderRadius: 9999 }}>{y}</span>))}
+                    <Button className="ml-auto rounded-lg px-4 py-2 shadow-sm" onClick={addYear} style={{ backgroundColor: COLORS.primary, color: "white" }}>+ Add Year</Button>
+                  </div>
+                  {feasibilityFlags.map((f) => (
+                    <div key={f.year} className="flex items-center justify-between border-b py-4">
+                      <span className="font-medium" style={{ color: COLORS.ink }}>{f.year}</span>
+                      <div className="flex gap-2">
+                        <Badge ok={f.liquidity_ok} label="Liquidity" />
+                        <Badge ok={f.efficiency_ok} label="Efficiency" />
+                        <Badge ok={f.leverage_ok} label="Leverage" />
+                        <Badge ok={f.coverage_ok} label="Coverage" />
+                        <Badge ok={f.margin_ok} label="Profitability" />
+                      </div>
+                    </div>
+                  ))}
+                  <p className="text-xs mt-3 leading-relaxed" style={{ color: COLORS.ink }}>Green means the metric meets the threshold. Red means it is below the recommended threshold. Thresholds are illustrative and vary by industry.</p>
+                </CardContent>
+              </Card>
+
+              <Card className="rounded-xl shadow-md">
+                <CardHeader className="rounded-t-xl" style={{ backgroundColor: COLORS.primaryDark }}>
+                  <CardTitle className="text-[#2a6142]">Account Balance</CardTitle>
+                </CardHeader>
+                <CardContent>
+                  <div className="overflow-x-auto">
+                    <table className="min-w-full text-sm">
+                      <thead>
+                        <tr>
+                          <th className="text-left px-3 py-2">Line Item</th>
+                          {years.map((y) => (<th key={y} className="text-right px-3 py-2">{y}</th>))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {Object.keys(KEYS).map((k) => (
+                          <tr key={k} className="border-t">
+                            <td className="px-3 py-2" style={{ color: COLORS.ink }}>{PRETTY[k]}</td>
+                            {years.map((y) => (
+                              <td key={y} className="p-2 text-right">
+                                <Input className="text-right" type="text" inputMode="decimal" value={fmtNum(model[y]?.[k])} onChange={(e) => updateValue(y, k, e.target.value)} />
+                              </td>
+                            ))}
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                  <p className="text-xs mt-3 text-gray-500">
+                    Note: For accounts not applicable, you may leave the input blank or enter a zero.
+                  </p>
+                </CardContent>
+              </Card>
+            </div>
+          </TabsContent>
+
+          <TabsContent value="results" className="mt-4">
+            {CATEGORY_ORDER.map((cat) => (
+              <div key={cat} className="mb-6">
+                <div className="text-xs uppercase tracking-wide font-semibold mb-2" style={{ color: COLORS.ink }}>{cat}</div>
+                <div className="grid md:grid-cols-2 gap-4">
+                  {RATIO_DEFS.filter((r) => r.category === cat).map((r) => (
+                    <Card key={r.id} className="shadow-sm">
+                      <CardHeader className="rounded-t-xl" style={{ backgroundColor: COLORS.primary }}>
+                        <CardTitle className="text-[#2a6142]">{r.name}</CardTitle>
+                      </CardHeader>
+                      <CardContent>
+                        <table className="w-full text-sm">
+                          <thead>
+                            <tr>
+                              <th className="text-left px-3 py-2">Year</th>
+                              <th className="text-right px-3 py-2">Value</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {ratiosPerYear.map((row) => (
+                              <tr key={row.year} className="border-t">
+                                <td className="px-3 py-2">{row.year}</td>
+                                <td className="p-2 text-right">{r.fmt(row[r.id])}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                        <div className="text-xs mt-2" style={{ color: COLORS.ink }}>
+                          <div><span className="font-medium">Formula:</span> {r.formula}</div>
+                          <div className="mt-1"><span className="font-medium">Recommended Threshold:</span> {r.threshold}</div>
+                          <div className="mt-1">{r.desc}</div>
+                        </div>
+                      </CardContent>
+                    </Card>
+                  ))}
+                </div>
+              </div>
+            ))}
+            <div className="flex flex-wrap gap-4 justify-end mt-6">
+              <Button onClick={() => downloadCSV(ratiosPerYear, "financial-ratios.csv")} style={{ backgroundColor: COLORS.accent, color: COLORS.ink }}>Download Results (CSV)</Button>
+              <Button onClick={() => downloadExcel({ years, model, ratiosPerYear, filename: "financial-ratios.xlsx" })} style={{ backgroundColor: COLORS.primary, color: "white" }}>Download Results (Excel)</Button>
+            </div>
+          </TabsContent>
+
+          <TabsContent value="charts" className="mt-4">
+            <Card className="rounded-xl shadow-md">
+              <CardHeader className="rounded-t-xl" style={{ backgroundColor: COLORS.primaryDark }}>
+                <CardTitle className="text-[#2a6142]">Ratio Trends</CardTitle>
+              </CardHeader>
+              <CardContent>
+                <div className="flex flex-wrap gap-2 mb-4">
+                  <Label className="mr-2">Select Ratio:</Label>
+                  <select className="border rounded-md px-3 py-2" value={selectedRatio} onChange={(e) => setSelectedRatio(e.target.value)}>
+                    {RATIO_DEFS.map((r) => (<option key={r.id} value={r.id}>{r.name}</option>))}
+                  </select>
+                </div>
+                <div className="h-80 w-full">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <LineChart data={ratioChartData} margin={{ top: 10, right: 30, left: 10, bottom: 0 }}>
+                      <CartesianGrid strokeDasharray="3 3" />
+                      <XAxis dataKey="year" />
+                      <YAxis />
+                      <Tooltip formatter={(v) => (selectedDef ? selectedDef.fmt(v) : v)} />
+                      <Legend />
+                      <Line type="monotone" dataKey="value" name={selectedDef?.name || "Value"} dot />
+                    </LineChart>
+                  </ResponsiveContainer>
+                </div>
+                <p className="text-xs mt-2" style={{ color: COLORS.ink }}>If a line looks flat or missing, check inputs for zeros or missing values.</p>
+              </CardContent>
+            </Card>
+          </TabsContent>
+        </Tabs>
+      </div>
+    </div>
+  );
+}
+
+function Badge({ ok, label }) { return (<span className={"px-2.5 py-1.5 rounded-full text-xs"} style={{ backgroundColor: ok ? COLORS.accent : COLORS.danger, color: "#ffffff" }}>{label}</span>); }
