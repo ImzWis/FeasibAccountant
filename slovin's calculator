@@ -1,0 +1,202 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Slovin's Calculator</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0-beta3/css/all.min.css">
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+        body {
+            font-family: 'Inter', sans-serif;
+            color: #08110b;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+            padding: 1rem;
+        }
+        .calculator-card {
+            background-color: #ffffff;
+            border-radius: 1.5rem;
+            box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04);
+            padding: 2rem;
+            width: 100%;
+            max-width: 28rem;
+            text-align: center;
+        }
+        .input-group {
+            display: flex;
+            flex-direction: column;
+            gap: 0.5rem;
+            align-items: flex-start;
+        }
+        .input-field {
+            width: 100%;
+            padding: 0.75rem 1rem;
+            border: 2px solid #e2e8f0;
+            border-radius: 0.75rem;
+            transition: all 0.2s ease-in-out;
+            font-size: 1rem;
+            outline: none;
+        }
+        .input-field:focus {
+            border-color: #2a6142;
+            box-shadow: 0 0 0 3px rgba(42, 97, 66, 0.3);
+        }
+        /* Hide the number input arrows */
+        input[type=number]::-webkit-inner-spin-button, 
+        input[type=number]::-webkit-outer-spin-button { 
+            -webkit-appearance: none; 
+            margin: 0; 
+        }
+        input[type=number] {
+            -moz-appearance: textfield;
+        }
+        .calculate-button {
+            width: 100%;
+            padding: 0.75rem 1.5rem;
+            background-color: #2a6142;
+            color: white;
+            border: none;
+            border-radius: 0.75rem;
+            font-weight: 600;
+            transition: background-color 0.2s ease-in-out, transform 0.1s ease-in-out;
+            cursor: pointer;
+            font-size: 1rem;
+        }
+        .calculate-button:hover {
+            background-color: #1c3d29;
+            transform: translateY(-1px);
+        }
+        .result-box {
+            background-color: #5c955e;
+            color: #08110b;
+            font-size: 1.5rem;
+            font-weight: 700;
+            padding: 1rem;
+            border-radius: 0.75rem;
+            text-align: center;
+        }
+        .formula-text {
+            color: #1c3d29;
+            font-size: 0.875rem;
+            margin-top: 1rem;
+        }
+        .input-container {
+            position: relative;
+            width: 100%;
+        }
+        .percent-sign {
+            position: absolute;
+            right: 1rem;
+            top: 50%;
+            transform: translateY(-50%);
+            color: #08110b;
+            font-size: 1rem;
+            font-weight: bold;
+            pointer-events: none;
+        }
+    </style>
+</head>
+<body>
+
+<div class="calculator-card">
+    <h1 class="text-3xl font-bold mb-2 text-[#08110b]">Slovin's Calculator</h1>
+    <p class="text-[#1c3d29] mb-6">Calculate the required sample size for a population.</p>
+
+    <div class="flex flex-col gap-4 mb-6">
+        <div class="input-group">
+            <label for="population" class="text-sm font-medium text-[#08110b]">Total Population (N)</label>
+            <input type="text" id="population" class="input-field" placeholder="e.g., 10,000">
+        </div>
+
+        <div class="input-group">
+            <label for="margin-of-error" class="text-sm font-medium text-[#08110b]">Margin of Error (e)</label>
+            <div class="input-container">
+                <input type="number" id="margin-of-error" class="input-field pr-8" placeholder="e.g., 5" step="0.01" min="0.01">
+                <span class="percent-sign">%</span>
+            </div>
+        </div>
+    </div>
+
+    <button id="calculate-btn" class="calculate-button mb-6">
+        Calculate Sample Size
+    </button>
+
+    <div id="result-container" class="hidden">
+        <p class="text-sm font-medium text-[#08110b] mb-2">Required Sample Size (n):</p>
+        <div id="result-box" class="result-box"></div>
+    </div>
+
+</div>
+
+<script>
+    // Constants
+    const populationInput = document.getElementById('population');
+    const marginOfErrorInput = document.getElementById('margin-of-error');
+    const calculateBtn = document.getElementById('calculate-btn');
+    const resultContainer = document.getElementById('result-container');
+    const resultBox = document.getElementById('result-box');
+
+    // Add event listener to the button
+    calculateBtn.addEventListener('click', calculateSlovin);
+    
+    // Add event listener to format the population input field as the user types
+    populationInput.addEventListener('input', function(e) {
+        const value = e.target.value.replace(/,/g, '');
+        if (value) {
+            e.target.value = parseInt(value, 10).toLocaleString('en-US');
+        }
+    });
+
+    /**
+     * Calculates the sample size using Slovin's formula.
+     */
+    function calculateSlovin() {
+        // Get the values from the input fields and remove commas from the population input
+        const N = parseFloat(populationInput.value.replace(/,/g, ''));
+        let e = parseFloat(marginOfErrorInput.value);
+
+        // Basic validation for inputs
+        if (isNaN(N) || N <= 0) {
+            alertUser('Please enter a valid positive number for the population.');
+            return;
+        }
+
+        if (isNaN(e) || e <= 0 || e > 100) {
+            alertUser('Please enter a valid margin of error between 0 and 100.');
+            return;
+        }
+
+        // Convert percentage to decimal for the formula
+        e = e / 100;
+
+        // Apply Slovin's formula: n = N / (1 + N * e^2)
+        const denominator = 1 + (N * Math.pow(e, 2));
+        const n = N / denominator;
+
+        // Display the rounded and formatted result in the result box
+        resultBox.textContent = Math.round(n).toLocaleString('en-US');
+        resultContainer.classList.remove('hidden');
+    }
+
+    /**
+     * Custom alert function to display a message on the UI.
+     * @param {string} message The message to display to the user.
+     */
+    function alertUser(message) {
+        // Here, we can create a custom modal or message box instead of using alert()
+        // For this example, we'll just display it in the result box for simplicity
+        // in a real app, this would be a more complex UI component.
+        resultBox.textContent = message;
+        resultContainer.classList.remove('hidden');
+        resultBox.style.backgroundColor = '#d3ddd3';
+        resultBox.style.color = '#08110b';
+    }
+
+</script>
+
+</body>
+</html>
